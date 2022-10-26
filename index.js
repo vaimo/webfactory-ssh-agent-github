@@ -2,17 +2,19 @@ const core = require('@actions/core');
 const child_process = require('child_process');
 const fs = require('fs');
 const crypto = require('crypto');
-const { homePath, sshAgentCmd, sshAddCmd, gitCmd } = require('./paths.js');
+const { homePath, sshAgentCmd, sshAddCmd, sshKeyGenCmd, gitCmd } = require('./paths.js');
 
 try {
-    const privateKey = core.getInput('ssh-private-key');
+    const privateKeys = core.getInput('ssh-private-keys');
     const logPublicKey = core.getBooleanInput('log-public-key', {default: true});
 
-    if (!privateKey) {
-        core.setFailed("The ssh-private-key argument is empty. Maybe the secret has not been configured, or you are using a wrong secret name in your workflow file.");
+    if (!privateKeys) {
+        core.setFailed("The ssh-private-keys Array{name, key} argument is empty. Maybe the secret has not been configured, or you are using a wrong secret name in your workflow file.");
 
         return;
     }
+
+    const privateKeysData = JSON.parse(privateKeys.replaceAll("\n", ""))
 
     const homeSsh = homePath + '/.ssh';
 
@@ -39,47 +41,58 @@ try {
         }
     });
 
-    console.log("Adding private key(s) to agent");
+    console.log("Adding private key(s) to agent and Configuring deployment key(s)");
 
-    privateKey.split(/(?=-----BEGIN)/).forEach(function(key) {
-        child_process.execFileSync(sshAddCmd, ['-'], { input: key.trim() + "\n" });
+    privateKeysData.forEach(async ({ name, key }) => {
+        const repoName = name.trim();
+        let privateKey = key.trim();
+
+        privateKey = privateKey.replace(/(KEY-----)(...)/, '$1\n$2')
+                  .replace(/(...)(-----END )/, '$1\n$2') + "\n"
+
+        child_process.execFileSync(sshAddCmd, ['-'], { input: privateKey });
+
+        const sha256 = crypto.createHash('sha256').update(privateKey).digest('hex');
+        const filename = `${homeSsh}/key-${sha256}`
+
+        await fs.writeFile(filename, privateKey, { }, (err) => {
+            if (err) {
+                console.log(err)
+                return
+            }
+
+            fs.chmodSync(filename, '600')
+
+            const parts = repoName.match(/\bgithub\.com[:/]([_.a-z0-9-]+\/[_.a-z0-9-]+)/i);
+
+            if (!parts) {
+                if (logPublicKey) {
+                    console.log(`Comment for name '${repoName}' does not match GitHub URL pattern. Not treating it as a GitHub deploy key.`);
+                }
+
+                return;
+            }
+
+            const ownerAndRepo = parts[1].replace(/\.git$/, '');
+
+            child_process.execSync(`${gitCmd} config --global --replace-all url."git@key-${sha256}.github.com:${ownerAndRepo}".insteadOf "https://github.com/${ownerAndRepo}"`);
+            child_process.execSync(`${gitCmd} config --global --add url."git@key-${sha256}.github.com:${ownerAndRepo}".insteadOf "git@github.com:${ownerAndRepo}"`);
+            child_process.execSync(`${gitCmd} config --global --add url."git@key-${sha256}.github.com:${ownerAndRepo}".insteadOf "ssh://git@github.com/${ownerAndRepo}"`);
+
+            const sshConfig = `\nHost key-${sha256}.github.com\n`
+                              + `    HostName github.com\n`
+                              + `    IdentityFile ${filename}\n`
+                              + `    IdentitiesOnly yes\n`;
+
+            fs.appendFileSync(`${homeSsh}/config`, sshConfig);
+
+            console.log(`Added deploy-key mapping: Use identity '${homeSsh}/key-${sha256}' for GitHub repository ${ownerAndRepo}`);
+        })
     });
 
     console.log("Key(s) added:");
 
     child_process.execFileSync(sshAddCmd, ['-l'], { stdio: 'inherit' });
-
-    console.log('Configuring deployment key(s)');
-
-    child_process.execFileSync(sshAddCmd, ['-L']).toString().trim().split(/\r?\n/).forEach(function(key) {
-        const parts = key.match(/\bgithub\.com[:/]([_.a-z0-9-]+\/[_.a-z0-9-]+)/i);
-
-        if (!parts) {
-            if (logPublicKey) {
-              console.log(`Comment for (public) key '${key}' does not match GitHub URL pattern. Not treating it as a GitHub deploy key.`);
-            }
-            return;
-        }
-
-        const sha256 = crypto.createHash('sha256').update(key).digest('hex');
-        const ownerAndRepo = parts[1].replace(/\.git$/, '');
-
-        fs.writeFileSync(`${homeSsh}/key-${sha256}`, key + "\n", { mode: '600' });
-
-        child_process.execSync(`${gitCmd} config --global --replace-all url."git@key-${sha256}.github.com:${ownerAndRepo}".insteadOf "https://github.com/${ownerAndRepo}"`);
-        child_process.execSync(`${gitCmd} config --global --add url."git@key-${sha256}.github.com:${ownerAndRepo}".insteadOf "git@github.com:${ownerAndRepo}"`);
-        child_process.execSync(`${gitCmd} config --global --add url."git@key-${sha256}.github.com:${ownerAndRepo}".insteadOf "ssh://git@github.com/${ownerAndRepo}"`);
-
-        const sshConfig = `\nHost key-${sha256}.github.com\n`
-                              + `    HostName github.com\n`
-                              + `    IdentityFile ${homeSsh}/key-${sha256}\n`
-                              + `    IdentitiesOnly yes\n`;
-
-        fs.appendFileSync(`${homeSsh}/config`, sshConfig);
-
-        console.log(`Added deploy-key mapping: Use identity '${homeSsh}/key-${sha256}' for GitHub repository ${ownerAndRepo}`);
-    });
-
 } catch (error) {
 
     if (error.code == 'ENOENT') {

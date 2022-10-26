@@ -39,8 +39,14 @@ jobs:
             # Make sure the @v0.6.0 matches the current version of the
             # action 
             - uses: webfactory/ssh-agent@v0.6.0
-              with:
-                  ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+            with:
+              ssh-private-keys: |
+                [
+                  {
+                    "name": "git@github.com:vendor/repo-1.git",
+                    "key": "${{ secrets.SSH_PRIVATE_KEY }}"
+                  }
+                ]
             - ... other steps
 ```
 5. If, for some reason, you need to change the location of the SSH agent socket, you can use the `ssh-auth-sock` input to provide a path.
@@ -55,10 +61,21 @@ You can set up different keys as different secrets and pass them all to the acti
 # ... contens as before
             - uses: webfactory/ssh-agent@v0.6.0
               with:
-                  ssh-private-key: |
-                        ${{ secrets.FIRST_KEY }}
-                        ${{ secrets.NEXT_KEY }}
-                        ${{ secrets.ANOTHER_KEY }}
+                  ssh-private-keys: |
+                    [
+                        {
+                          "name": "git@github.com:vendor/repo-1.git",
+                          "key": "${{ secrets.FIRST_KEY }}"
+                        },
+                        {
+                          "name": "git@github.com:vendor/repo-2.git",
+                          "key": "${{ secrets.NEXT_KEY }}"
+                        },
+                        {
+                          "name": "git@github.com:vendor/repo-3.git",
+                          "key": "${{ secrets.ANOTHER_KEY }}"
+                        }
+                    ]
 ```
 
 The `ssh-agent` will load all of the keys and try each one in order when establishing SSH connections.
