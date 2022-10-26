@@ -1,46 +1,31 @@
 on: [ push, pull_request ]
 
 jobs:
-    deployment_keys_demo:
-        strategy:
-            fail-fast: false
-            matrix:
-                os: [ ubuntu-latest, macOS-latest, windows-latest ]
-        runs-on: ${{ matrix.os }}
-        steps:
-            -   uses: actions/checkout@v3
-            -   name: Setup key
-                uses: ./
-                with:
-                    ssh-private-key: |
-                        ${{ secrets.MPDUDE_TEST_1_DEPLOY_KEY }}
-                        ${{ secrets.MPDUDE_TEST_2_DEPLOY_KEY }}
-            -   run: |
-                    git clone https://github.com/mpdude/test-1.git test-1-http
-                    git clone git@github.com:mpdude/test-1.git test-1-git
-                    git clone ssh://git@github.com/mpdude/test-1.git test-1-git-ssh
-                    git clone https://github.com/mpdude/test-2.git test-2-http
-                    git clone git@github.com:mpdude/test-2.git test-2-git
-                    git clone ssh://git@github.com/mpdude/test-2.git test-2-git-ssh
-
-    docker_demo:
-        runs-on: ubuntu-latest
-        container:
-            image: ubuntu:latest
-        steps:
-            -   uses: actions/checkout@v3
-            -   run: apt update && apt install -y openssh-client git
-            -   name: Setup key
-                uses: ./
-                with:
-                    ssh-private-key: |
-                        ${{ secrets.MPDUDE_TEST_1_DEPLOY_KEY }}
-                        ${{ secrets.MPDUDE_TEST_2_DEPLOY_KEY }}
-            -   run: |
-                    git clone https://github.com/mpdude/test-1.git test-1-http
-                    git clone git@github.com:mpdude/test-1.git test-1-git
-                    git clone ssh://git@github.com/mpdude/test-1.git test-1-git-ssh
-                    git clone https://github.com/mpdude/test-2.git test-2-http
-                    git clone git@github.com:mpdude/test-2.git test-2-git
-                    git clone ssh://git@github.com/mpdude/test-2.git test-2-git-ssh
-
+  vmo_deployment_keys_demo:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:latest
+    steps:
+      -   uses: actions/checkout@v3
+      -   run: apt update && apt install -y openssh-client git curl
+      -   if: ${{ env.ACT }}
+          name: Hack container for local development
+          run: |
+            curl -fsSL https://deb.nodesource.com/setup_16.x | bash -s
+            apt-get install -y nodejs
+      -   name: Setup node
+          uses: actions/setup-node@v3
+          with:
+            node-version: '16.x'
+      -   name: Setup key
+          uses: ./
+          with:
+            ssh-private-keys: |
+              {
+                "git@github.com:vaimo/vsf2_ext-lru-cache-driver.git": "${{ secrets.TEST_1_DEPLOY_KEY }}",
+                "git@github.com:mpdude/test-2.git": "${{ secrets.TEST_2_DEPLOY_KEY }}"
+              }
+      -   run: |
+            git clone https://github.com/vaimo/vsf2_ext-lru-cache-driver.git test-1-http
+            git clone git@github.com:vaimo/vsf2_ext-lru-cache-driver.git test-1-git
+            git clone ssh://git@github.com/vaimo/vsf2_ext-lru-cache-driver.git test-1-git-ssh

@@ -27,7 +27,7 @@ GitHub Actions only have access to the repository they run for. So, in order to 
     * In your repository, go to the *Settings > Secrets* menu and create a new secret. In this example, we'll call it `SSH_PRIVATE_KEY`. 
     * Put the contents of the *private* SSH key file into the contents field. <br>
     * This key should start with `-----BEGIN ... PRIVATE KEY-----`, consist of many lines and ends with `-----END ... PRIVATE KEY-----`. 
-5. In your workflow definition file, add the following step. Preferably this would be rather on top, near the `actions/checkout@v2` line.
+5. In your workflow definition file, add the following step. Preferably this would be rather on top, near the `actions/checkout@v3` line.
 
 ```yaml
 # .github/workflows/my-workflow.yml
@@ -35,12 +35,13 @@ jobs:
     my_job:
         ...
         steps:
-            - actions/checkout@v2
-            # Make sure the @v0.6.0 matches the current version of the
-            # action 
-            - uses: webfactory/ssh-agent@v0.6.0
-              with:
-                  ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+            - actions/checkout@v3
+            - uses: vaimo/webfactory-ssh-agent-github@feature/json-private-keys
+            with:
+              ssh-private-keys: |
+              {
+                "git@github.com:vendor/repo-1.git": "${{ secrets.SSH_PRIVATE_KEY }}"
+              }
             - ... other steps
 ```
 5. If, for some reason, you need to change the location of the SSH agent socket, you can use the `ssh-auth-sock` input to provide a path.
@@ -53,12 +54,14 @@ You can set up different keys as different secrets and pass them all to the acti
 
 ```yaml
 # ... contens as before
-            - uses: webfactory/ssh-agent@v0.6.0
+            - uses: vaimo/webfactory-ssh-agent-github@feature/json-private-keys
               with:
-                  ssh-private-key: |
-                        ${{ secrets.FIRST_KEY }}
-                        ${{ secrets.NEXT_KEY }}
-                        ${{ secrets.ANOTHER_KEY }}
+                  ssh-private-keys: |
+                    {
+                      "git@github.com:vendor/repo-1.git": "${{ secrets.FIRST_KEY }}",
+                      "git@github.com:vendor/repo-2.git": "${{ secrets.NEXT_KEY }}",
+                      "git@github.com:vendor/repo-3.git": "${{ secrets.ANOTHER_KEY }}",
+                    }
 ```
 
 The `ssh-agent` will load all of the keys and try each one in order when establishing SSH connections.
@@ -80,7 +83,7 @@ To support picking the right key in this use case, this action scans _key commen
 
 The following inputs can be used to control the action's behavior:
 
-* `ssh-private-key`: Required. Use this to provide the key(s) to load as GitHub Actions secrets.
+* `ssh-private-keys`: Required. Use this to provide the key(s) to load as GitHub Actions secrets.
 * `ssh-auth-sock`: Can be used to control where the SSH agent socket will be placed. Ultimately affects the `$SSH_AUTH_SOCK` environment variable.
 * `log-public-key`: Set this to `false` if you want to suppress logging of _public_ key information. To simplify debugging and since it contains public key information only, this is turned on by default.
 

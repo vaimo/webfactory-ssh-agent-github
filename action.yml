@@ -1,9 +1,10 @@
-name: 'webfactory/ssh-agent'
+name: 'vaimo/webfactory-ssh-agent'
 description: 'Run `ssh-agent` and load an SSH key to access other private repositories'
 inputs:
-    ssh-private-key:
-        description: 'Private SSH key to register in the SSH agent'
+    ssh-private-keys:
+        description: 'Private SSH key(s) to register in the SSH agent'
         required: true
+        default: 'GitHub'
     ssh-auth-sock:
         description: 'Where to place the SSH Agent auth socket'
     log-public-key:
