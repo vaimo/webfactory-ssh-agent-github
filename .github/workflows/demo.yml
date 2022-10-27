@@ -11,7 +11,7 @@ jobs:
       -   if: ${{ env.ACT }}
           name: Hack container for local development
           run: |
-            curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash -
+            curl -fsSL https://deb.nodesource.com/setup_16.x | bash -s
             apt-get install -y nodejs
       -   name: Setup node
           uses: actions/setup-node@v3
