@@ -292,13 +292,14 @@ var __importStar = (this && this.__importStar) || function (mod) {
     return result;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.issueCommand = void 0;
+exports.prepareKeyValueMessage = exports.issueFileCommand = void 0;
 // We use any as a valid input type
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const fs = __importStar(__webpack_require__(747));
 const os = __importStar(__webpack_require__(87));
+const uuid_1 = __webpack_require__(62);
 const utils_1 = __webpack_require__(82);
-function issueCommand(command, message) {
+function issueFileCommand(command, message) {
     const filePath = process.env[`GITHUB_${command}`];
     if (!filePath) {
         throw new Error(`Unable to find environment variable for file command ${command}`);
@@ -310,7 +311,22 @@ function issueCommand(command, message) {
         encoding: 'utf8'
     });
 }
-exports.issueCommand = issueCommand;
+exports.issueFileCommand = issueFileCommand;
+function prepareKeyValueMessage(key, value) {
+    const delimiter = `ghadelimiter_${uuid_1.v4()}`;
+    const convertedValue = utils_1.toCommandValue(value);
+    // These should realistically never happen, but just in case someone finds a
+    // way to exploit uuid generation let's not allow keys or values that contain
+    // the delimiter.
+    if (key.includes(delimiter)) {
+        throw new Error(`Unexpected input: name should not contain the delimiter "${delimiter}"`);
+    }
+    if (convertedValue.includes(delimiter)) {
+        throw new Error(`Unexpected input: value should not contain the delimiter "${delimiter}"`);
+    }
+    return `${key}<<${delimiter}${os.EOL}${convertedValue}${os.EOL}${delimiter}`;
+}
+exports.prepareKeyValueMessage = prepareKeyValueMessage;
 //# sourceMappingURL=file-command.js.map
 
 /***/ }),
@@ -322,17 +338,18 @@ const core = __webpack_require__(470);
 const child_process = __webpack_require__(129);
 const fs = __webpack_require__(747);
 const crypto = __webpack_require__(417);
-const { homePath, sshAgentCmd, sshAddCmd, gitCmd } = __webpack_require__(972);
+const { homePath, sshAgentCmd, sshAddCmd, sshKeyGenCmd, gitCmd } = __webpack_require__(972);
 
 try {
-    const privateKey = core.getInput('ssh-private-key');
-    const logPublicKey = core.getBooleanInput('log-public-key', {default: true});
+    const privateKeys = core.getInput('ssh-private-keys', { required: true });
+    const logPublicKey = core.getBooleanInput('log-public-key');
 
-    if (!privateKey) {
-        core.setFailed("The ssh-private-key argument is empty. Maybe the secret has not been configured, or you are using a wrong secret name in your workflow file.");
-
-        return;
+    if (!privateKeys) {
+        throw new Error("The ssh-private-keys {name: key} argument is empty. Maybe the secret has not been configured, or you are using a wrong secret name in your workflow file.")
     }
+
+    console.debug(privateKeys.replaceAll("\n", ""))
+    const privateKeysData = JSON.parse(privateKeys.replaceAll("\n", ""))
 
     const homeSsh = homePath + '/.ssh';
 
@@ -349,7 +366,7 @@ try {
     const sshAgentArgs = (authSock && authSock.length > 0) ? ['-a', authSock] : [];
 
     // Extract auth socket path and agent pid and set them as job variables
-    child_process.execFileSync(sshAgentCmd, sshAgentArgs).toString().split("\n").forEach(function(line) {
+    child_process.execFileSync(sshAgentCmd, sshAgentArgs).toString().split("\n").forEach((line) => {
         const matches = /^(SSH_AUTH_SOCK|SSH_AGENT_PID)=(.*); export \1/.exec(line);
 
         if (matches && matches.length > 0) {
@@ -359,52 +376,71 @@ try {
         }
     });
 
-    console.log("Adding private key(s) to agent");
+    console.log("Adding private key(s) to agent and Configuring deployment key(s)");
 
-    privateKey.split(/(?=-----BEGIN)/).forEach(function(key) {
-        child_process.execFileSync(sshAddCmd, ['-'], { input: key.trim() + "\n" });
+    Object.keys(privateKeysData).forEach(async (name) => {
+        const repoName = name.trim();
+        let privateKey = privateKeysData[name].trim();
+
+        if (!privateKey) {
+            throw new Error('privateKey is empty for "' + name + '"')
+        }
+
+        privateKey = privateKey.replace(/(KEY-----)(...)/, '$1\n$2')
+                  .replace(/(...)(-----END )/, '$1\n$2') + "\n"
+
+        child_process.execFileSync(sshAddCmd, ['-'], { input: privateKey });
+
+        const sha256 = crypto.createHash('sha256').update(privateKey).digest('hex');
+        const filename = `${homeSsh}/key-${sha256}`
+
+        await fs.writeFile(filename, privateKey, { }, (err) => {
+            if (err) {
+                console.log(err)
+                return
+            }
+
+            fs.chmodSync(filename, '600')
+
+            const parts = repoName.match(/\bgithub\.com[:/]([_.a-z0-9-]+\/[_.a-z0-9-]+)/i);
+
+            if (!parts) {
+                if (logPublicKey) {
+                    console.log(`Comment for name '${repoName}' does not match GitHub URL pattern. Not treating it as a GitHub deploy key.`);
+                }
+
+                return;
+            }
+
+            const ownerAndRepo = parts[1].replace(/\.git$/, '');
+
+            child_process.execSync(`${gitCmd} config --global --replace-all url."git@key-${sha256}.github.com:${ownerAndRepo}".insteadOf "https://github.com/${ownerAndRepo}"`);
+            child_process.execSync(`${gitCmd} config --global --add url."git@key-${sha256}.github.com:${ownerAndRepo}".insteadOf "git@github.com:${ownerAndRepo}"`);
+            child_process.execSync(`${gitCmd} config --global --add url."git@key-${sha256}.github.com:${ownerAndRepo}".insteadOf "ssh://git@github.com/${ownerAndRepo}"`);
+
+            const sshConfig = `\nHost key-${sha256}.github.com\n`
+                              + `    HostName github.com\n`
+                              + `    IdentityFile ${filename}\n`
+                              + `    IdentitiesOnly yes\n`;
+
+            fs.appendFileSync(`${homeSsh}/config`, sshConfig);
+
+            console.log(`Added deploy-key mapping: Use identity '${homeSsh}/key-${sha256}' for GitHub repository ${ownerAndRepo}`);
+        })
     });
 
     console.log("Key(s) added:");
 
     child_process.execFileSync(sshAddCmd, ['-l'], { stdio: 'inherit' });
-
-    console.log('Configuring deployment key(s)');
-
-    child_process.execFileSync(sshAddCmd, ['-L']).toString().trim().split(/\r?\n/).forEach(function(key) {
-        const parts = key.match(/\bgithub\.com[:/]([_.a-z0-9-]+\/[_.a-z0-9-]+)/i);
-
-        if (!parts) {
-            if (logPublicKey) {
-              console.log(`Comment for (public) key '${key}' does not match GitHub URL pattern. Not treating it as a GitHub deploy key.`);
-            }
-            return;
-        }
-
-        const sha256 = crypto.createHash('sha256').update(key).digest('hex');
-        const ownerAndRepo = parts[1].replace(/\.git$/, '');
-
-        fs.writeFileSync(`${homeSsh}/key-${sha256}`, key + "\n", { mode: '600' });
-
-        child_process.execSync(`${gitCmd} config --global --replace-all url."git@key-${sha256}.github.com:${ownerAndRepo}".insteadOf "https://github.com/${ownerAndRepo}"`);
-        child_process.execSync(`${gitCmd} config --global --add url."git@key-${sha256}.github.com:${ownerAndRepo}".insteadOf "git@github.com:${ownerAndRepo}"`);
-        child_process.execSync(`${gitCmd} config --global --add url."git@key-${sha256}.github.com:${ownerAndRepo}".insteadOf "ssh://git@github.com/${ownerAndRepo}"`);
-
-        const sshConfig = `\nHost key-${sha256}.github.com\n`
-                              + `    HostName github.com\n`
-                              + `    IdentityFile ${homeSsh}/key-${sha256}\n`
-                              + `    IdentitiesOnly yes\n`;
-
-        fs.appendFileSync(`${homeSsh}/config`, sshConfig);
-
-        console.log(`Added deploy-key mapping: Use identity '${homeSsh}/key-${sha256}' for GitHub repository ${ownerAndRepo}`);
-    });
-
 } catch (error) {
 
-    if (error.code == 'ENOENT') {
+    if (error.code === 'ENOENT') {
         console.log(`The '${error.path}' executable could not be found. Please make sure it is on your PATH and/or the necessary packages are installed.`);
         console.log(`PATH is set to: ${process.env.PATH}`);
+    }
+
+    if (error.constructor && error.constructor.name === 'SyntaxError') {
+        console.error(`JSON parsing error on "ssh-private-keys" value: ${error.message}`);
     }
 
     core.setFailed(error.message);
@@ -1747,7 +1783,6 @@ const file_command_1 = __webpack_require__(102);
 const utils_1 = __webpack_require__(82);
 const os = __importStar(__webpack_require__(87));
 const path = __importStar(__webpack_require__(622));
-const uuid_1 = __webpack_require__(62);
 const oidc_utils_1 = __webpack_require__(742);
 /**
  * The code to exit an action
@@ -1777,20 +1812,9 @@ function exportVariable(name, val) {
     process.env[name] = convertedVal;
     const filePath = process.env['GITHUB_ENV'] || '';
     if (filePath) {
-        const delimiter = `ghadelimiter_${uuid_1.v4()}`;
-        // These should realistically never happen, but just in case someone finds a way to exploit uuid generation let's not allow keys or values that contain the delimiter.
-        if (name.includes(delimiter)) {
-            throw new Error(`Unexpected input: name should not contain the delimiter "${delimiter}"`);
-        }
-        if (convertedVal.includes(delimiter)) {
-            throw new Error(`Unexpected input: value should not contain the delimiter "${delimiter}"`);
-        }
-        const commandValue = `${name}<<${delimiter}${os.EOL}${convertedVal}${os.EOL}${delimiter}`;
-        file_command_1.issueCommand('ENV', commandValue);
+        return file_command_1.issueFileCommand('ENV', file_command_1.prepareKeyValueMessage(name, val));
     }
-    else {
-        command_1.issueCommand('set-env', { name }, convertedVal);
-    }
+    command_1.issueCommand('set-env', { name }, convertedVal);
 }
 exports.exportVariable = exportVariable;
 /**
@@ -1808,7 +1832,7 @@ exports.setSecret = setSecret;
 function addPath(inputPath) {
     const filePath = process.env['GITHUB_PATH'] || '';
     if (filePath) {
-        file_command_1.issueCommand('PATH', inputPath);
+        file_command_1.issueFileCommand('PATH', inputPath);
     }
     else {
         command_1.issueCommand('add-path', {}, inputPath);
@@ -1848,7 +1872,10 @@ function getMultilineInput(name, options) {
     const inputs = getInput(name, options)
         .split('\n')
         .filter(x => x !== '');
-    return inputs;
+    if (options && options.trimWhitespace === false) {
+        return inputs;
+    }
+    return inputs.map(input => input.trim());
 }
 exports.getMultilineInput = getMultilineInput;
 /**
@@ -1881,8 +1908,12 @@ exports.getBooleanInput = getBooleanInput;
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function setOutput(name, value) {
+    const filePath = process.env['GITHUB_OUTPUT'] || '';
+    if (filePath) {
+        return file_command_1.issueFileCommand('OUTPUT', file_command_1.prepareKeyValueMessage(name, value));
+    }
     process.stdout.write(os.EOL);
-    command_1.issueCommand('set-output', { name }, value);
+    command_1.issueCommand('set-output', { name }, utils_1.toCommandValue(value));
 }
 exports.setOutput = setOutput;
 /**
@@ -2011,7 +2042,11 @@ exports.group = group;
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function saveState(name, value) {
-    command_1.issueCommand('save-state', { name }, value);
+    const filePath = process.env['GITHUB_STATE'] || '';
+    if (filePath) {
+        return file_command_1.issueFileCommand('STATE', file_command_1.prepareKeyValueMessage(name, value));
+    }
+    command_1.issueCommand('save-state', { name }, utils_1.toCommandValue(value));
 }
 exports.saveState = saveState;
 /**
